@@ -1,0 +1,25 @@
+[
+  {
+    "name": "provider-a",
+    "rpcUrl": "https://your-rpc-a.example.com",
+    "yellowstoneUrl": "https://your-yellowstone-a.example.com:443",
+    "cluster": "mainnet-beta",
+    "writeEnabled": true,
+    "priorityBias": 4,
+    "tags": [
+      "primary",
+      "low-latency"
+    ]
+  },
+  {
+    "name": "provider-b",
+    "rpcUrl": "https://your-rpc-b.example.com",
+    "yellowstoneUrl": "https://your-yellowstone-b.example.com:443",
+    "cluster": "mainnet-beta",
+    "writeEnabled": true,
+    "priorityBias": 0,
+    "tags": [
+      "backup"
+    ]
+  }
+]

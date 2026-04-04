@@ -1,0 +1,35 @@
+[
+  {
+    "name": "alpha",
+    "rpcUrl": "http://127.0.0.1:8891",
+    "cluster": "demo-local",
+    "writeEnabled": true,
+    "priorityBias": 3,
+    "tags": [
+      "demo",
+      "primary"
+    ]
+  },
+  {
+    "name": "beta",
+    "rpcUrl": "http://127.0.0.1:8892",
+    "cluster": "demo-local",
+    "writeEnabled": true,
+    "priorityBias": 0,
+    "tags": [
+      "demo",
+      "laggy"
+    ]
+  },
+  {
+    "name": "gamma",
+    "rpcUrl": "http://127.0.0.1:8893",
+    "cluster": "demo-local",
+    "writeEnabled": true,
+    "priorityBias": 1,
+    "tags": [
+      "demo",
+      "slow"
+    ]
+  }
+]
