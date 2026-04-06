@@ -34,12 +34,17 @@ Solana apps hard-code a single RPC endpoint. When that node lags behind the chai
 │  └───────────────┘   └──────────────────┘   └──────┬────────┘  │
 └─────────────────────────────────────────────────────┼───────────┘
                                                       │
-                  ┌───────────────────────────────────┤
-                  │        Upstream Providers          │
-                  │  ┌──────────┐  ┌────────┐  ┌───┐  │
-                  │  │QuickNode │  │ Helius │  │...│  │
-                  │  └──────────┘  └────────┘  └───┘  │
-                  └───────────────────────────────────┘
+              ┌────────────────────────────────────────────────┤
+              │              Upstream Providers                │
+              │  ┌──────────────────────────┐  ┌───────────┐  │
+              │  │  RPCFast  ★ Yellowstone  │  │ QuickNode │  │
+              │  │  (gRPC slot streaming)   │  │ (RPC poll)│  │
+              │  └──────────────────────────┘  └───────────┘  │
+              │  ┌──────────┐  ┌───────────────────────────┐  │
+              │  │  Helius  │  │  api.mainnet-beta.solana   │  │
+              │  │ (RPC poll│  │        (baseline)          │  │
+              │  └──────────┘  └───────────────────────────┘  │
+              └────────────────────────────────────────────────┘
 ```
 
 ---
@@ -64,11 +69,11 @@ Lower score = better candidate. A node 2 slots behind carries a +24 penalty befo
 
 | Use Case | How RouteX Helps |
 |---|---|
-| DeFi trading bots | Stale reads cause wrong pricing — RouteX always picks the freshest node |
-| NFT minting | Writes need a synced node — stale providers are excluded automatically |
-| Multi-provider redundancy | Transparent failover across QuickNode, Helius, public RPC, etc. |
-| Cost optimization | Route reads to a cheaper endpoint; writes to a premium one via `priorityBias` |
-| Local development | Built-in mock cluster needs no external RPC keys |
+| DeFi trading bots | Stale reads cause wrong pricing — RouteX routes to the freshest node via RPCFast Yellowstone gRPC |
+| NFT minting | Writes need a fully synced node — stale providers are excluded automatically |
+| Multi-provider redundancy | Transparent failover: RPCFast (primary) → QuickNode → Helius → public RPC |
+| Yellowstone streaming | RPCFast's gRPC endpoint feeds sub-millisecond slot updates, eliminating polling lag |
+| Local development | Built-in mock cluster — no external RPC keys needed |
 
 ---
 
@@ -107,17 +112,35 @@ npm run demo:benchmark # Terminal 3 (optional): stress test
 ```json
 [
   {
-    "name": "helius",
-    "rpcUrl": "https://mainnet.helius-rpc.com/?api-key=YOUR_KEY",
-    "yellowstoneUrl": "YOUR_GRPC_HOST:443",
-    "token": "YOUR_GRPC_TOKEN",
+    "name": "rpcfast",
+    "rpcUrl": "https://solana-rpc.rpcfast.com?api_key=YOUR_RPCFAST_API_KEY",
+    "yellowstoneUrl": "solana-yellowstone-grpc.rpcfast.com:443",
+    "token": "YOUR_RPCFAST_GRPC_TOKEN",
     "cluster": "mainnet-beta",
     "writeEnabled": true,
-    "priorityBias": 2,
-    "tags": ["fast", "helius"]
+    "priorityBias": 3,
+    "tags": ["primary", "yellowstone-ready", "rpcfast"]
+  },
+  {
+    "name": "quicknode",
+    "rpcUrl": "https://YOUR_ENDPOINT.quiknode.pro/YOUR_KEY/",
+    "cluster": "mainnet-beta",
+    "writeEnabled": true,
+    "priorityBias": 1,
+    "tags": ["fallback", "quicknode"]
+  },
+  {
+    "name": "solana-public",
+    "rpcUrl": "https://api.mainnet-beta.solana.com",
+    "cluster": "mainnet-beta",
+    "writeEnabled": true,
+    "priorityBias": 0,
+    "tags": ["baseline", "public"]
   }
 ]
 ```
+
+> **RPCFast** is the recommended primary provider — it exposes a [Yellowstone gRPC](https://solana-yellowstone-grpc.rpcfast.com) endpoint for real-time slot streaming, giving RouteX sub-millisecond freshness data instead of polling.
 
 | Field | Description |
 |---|---|
