@@ -1,145 +1,108 @@
 # RouteX — Freshness-Aware Solana RPC Router
 
-> **Route every JSON-RPC call to the fastest, freshest, healthiest Solana node — automatically.**
+> Route every JSON-RPC call to the fastest, freshest, healthiest Solana node — automatically.
 
 ---
 
 ## The Problem
 
-Solana apps depend on RPC providers (QuickNode, Helius, public endpoints, etc.) to read and write on-chain data. These providers are never equally healthy at the same time:
+Solana apps hard-code a single RPC endpoint. When that node lags behind the chain tip, you get stale reads, failed writes, and degraded UX — with no automatic recovery.
 
-- **Slot lag** — one node may be 5–10 slots behind the chain tip, causing stale reads
-- **Latency spikes** — a provider can become slow under load without going fully down
-- **Silent failures** — timeouts and errors degrade UX without triggering obvious alerts
-- **No smart failover** — most apps are hard-coded to one RPC; a config change or restart is required to switch
-
-**RouteX solves this by acting as a local proxy** — your app talks to `localhost:8080`, and RouteX handles selecting the best upstream provider on every request, automatically.
+**RouteX acts as a local proxy.** Your app talks to `localhost:8080`; RouteX handles choosing the best upstream provider on every single request.
 
 ---
 
 ## Architecture
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│                        Your Solana App                             │
-│          (wallet adapter / SDK / custom client)                    │
-└─────────────────────────┬──────────────────────────────────────────┘
-                          │  JSON-RPC  (POST /rpc)
-                          ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         RouteX Proxy                                │
-│                                                                     │
-│  ┌──────────────┐   ┌───────────────────┐   ┌───────────────────┐  │
-│  │ Slot Monitor │   │  Scoring Engine   │   │  Proxy Gateway    │  │
-│  │              │   │                   │   │                   │  │
-│  │ Yellowstone  │──▶│ slotLag × 12      │──▶│ Pick best ranked  │  │
-│  │ gRPC stream  │   │ + latency penalty │   │ provider, retry   │  │
-│  │  — or —      │   │ + error penalty   │   │ on failure        │  │
-│  │ RPC polling  │   │ + priority bias   │   │                   │  │
-│  └──────────────┘   └───────────────────┘   └─────────┬─────────┘  │
-│                                                        │            │
-└────────────────────────────────────────────────────────┼────────────┘
-                                                         │
-              ┌──────────────────────────────────────────┤
-              │ Upstream RPC Providers                    │
-              │                                           │
-              │  ┌──────────┐  ┌────────┐  ┌──────────┐  │
-              │  │ QuickNode│  │ Helius │  │ RPCFast  │  │
-              │  └──────────┘  └────────┘  └──────────┘  │
-              └───────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│                   Your Solana App                    │
+│         (wallet adapter / SDK / custom client)       │
+└───────────────────────┬──────────────────────────────┘
+                        │  JSON-RPC  (POST /rpc)
+                        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       RouteX Proxy                              │
+│                                                                 │
+│  ┌───────────────┐   ┌──────────────────┐   ┌───────────────┐  │
+│  │  Slot Monitor │   │  Scoring Engine  │   │ Proxy Gateway │  │
+│  │               │   │                  │   │               │  │
+│  │  Yellowstone  │──▶│  slotLag × 12    │──▶│  Best ranked  │  │
+│  │  gRPC stream  │   │  + latency       │   │  provider,    │  │
+│  │   — or —      │   │  + error rate    │   │  auto-retry   │  │
+│  │  RPC polling  │   │  + priority bias │   │  on failure   │  │
+│  └───────────────┘   └──────────────────┘   └──────┬────────┘  │
+└─────────────────────────────────────────────────────┼───────────┘
+                                                      │
+                  ┌───────────────────────────────────┤
+                  │        Upstream Providers          │
+                  │  ┌──────────┐  ┌────────┐  ┌───┐  │
+                  │  │QuickNode │  │ Helius │  │...│  │
+                  │  └──────────┘  └────────┘  └───┘  │
+                  └───────────────────────────────────┘
 ```
 
 ---
 
 ## How It Works
 
-### 1. Slot Monitor
-Continuously tracks the current Solana slot for every configured provider:
-- **Yellowstone mode** — subscribes to a gRPC slot stream (sub-millisecond freshness, push-based)
-- **RPC polling mode** — calls `getSlot` on an interval (fallback, pull-based)
-- Hybrid: providers with a `yellowstoneUrl` use gRPC; the rest use RPC polling
+**1. Slot Monitor** — tracks the current Solana slot for every provider via Yellowstone gRPC (push, sub-ms) or RPC polling (pull, configurable interval). Hybrid mode is supported: gRPC-capable providers stream, the rest poll.
 
-### 2. Scoring Engine
-Every provider gets a score after each probe:
+**2. Scoring Engine** — ranks providers after every update:
 ```
-score = (slotLag × 12) + latencyPenalty + errorPenalty + timeoutPenalty + failurePenalty - priorityBias
+score = (slotLag × 12) + latencyPenalty + errorPenalty + failurePenalty − priorityBias
 ```
-Lower score = better candidate. A provider 2 slots behind carries a +24 penalty on top of latency.
+Lower score = better candidate. A node 2 slots behind carries a +24 penalty before latency is even factored in.
 
-### 3. Proxy Gateway
-- Receives JSON-RPC requests at `POST /rpc`
-- Classifies requests into `read`, `fresh-read`, or `write` strategies
-- Selects the best provider meeting the strategy's slot-lag threshold
-- Retries on failure with the next-best provider
-- Sets `X-RouteX-Provider` response header so you can see who served the request
+**3. Proxy Gateway** — classifies each request (`read` / `fresh-read` / `write`), picks the best provider meeting that strategy's slot-lag threshold, and retries on failure with the next-best provider.
 
-### 4. Live Dashboard
-A real-time web dashboard at `http://localhost:8080` shows:
-- Provider health, slot lag, latency, and score
-- Active failover events and provider switches
-- A "race view" visualizing relative provider speed
-- Manual probe buttons to test live routing
+**4. Live Dashboard** — real-time web UI at `http://localhost:8080` showing provider health, slot lag, scores, routing decisions, and a dynamic race visualization.
 
 ---
 
 ## Use Cases
 
-| Use Case | Why RouteX Helps |
+| Use Case | How RouteX Helps |
 |---|---|
-| **DeFi trading bots** | Stale reads cause wrong pricing; RouteX ensures the freshest slot |
-| **NFT minting** | Write transactions need a fully synced node; RouteX only routes writes to healthy providers |
-| **Multi-datacenter redundancy** | Set up providers in different regions; RouteX picks the fastest one live |
-| **Development & testing** | Run the built-in mock cluster locally with no external RPC dependencies |
-| **Cost optimization** | Route high-frequency read traffic to a free/cheap endpoint, writes to a premium one via `priorityBias` |
+| DeFi trading bots | Stale reads cause wrong pricing — RouteX always picks the freshest node |
+| NFT minting | Writes need a synced node — stale providers are excluded automatically |
+| Multi-provider redundancy | Transparent failover across QuickNode, Helius, public RPC, etc. |
+| Cost optimization | Route reads to a cheaper endpoint; writes to a premium one via `priorityBias` |
+| Local development | Built-in mock cluster needs no external RPC keys |
 
 ---
 
 ## Quick Start
 
-### 1. Install
 ```bash
+# 1. Clone and install
 git clone https://github.com/Harshbhargav45/RouteX-.git
 cd RouteX-
 npm install
-```
 
-### 2. Configure providers
-```bash
+# 2. Configure providers (copy the example and fill in your RPC URLs)
 cp routex.providers.example.json routex.providers.json
-# Edit routex.providers.json with your RPC URLs and API keys
-```
 
-### 3. Run
-```bash
+# 3. Start
 npm start
-# RouteX is now listening at http://127.0.0.1:8080
+# → http://127.0.0.1:8080
 ```
 
 Point your Solana SDK at `http://127.0.0.1:8080/rpc` instead of a direct RPC URL.
 
-### 4. Open the Dashboard
-Visit [http://127.0.0.1:8080](http://127.0.0.1:8080)
-
----
-
-## Demo Mode (No external RPC needed)
+### Try the built-in demo (no external RPC needed)
 
 ```bash
-# Terminal 1 — start mock Solana cluster nodes
-npm run demo:cluster
-
-# Terminal 2 — start RouteX against the mock cluster
-npm run demo:routex
-
-# Terminal 3 (optional) — run a stress-test benchmark
-npm run demo:benchmark
+npm run demo:cluster   # Terminal 1: mock Solana nodes
+npm run demo:routex    # Terminal 2: RouteX against the mock
+npm run demo:benchmark # Terminal 3 (optional): stress test
 ```
 
 ---
 
-## Provider Config Reference
+## Provider Config
 
-`routex.providers.json` is an array of provider objects:
+`routex.providers.json` — an array of provider objects:
 
 ```json
 [
@@ -156,46 +119,24 @@ npm run demo:benchmark
 ]
 ```
 
-| Field | Required | Description |
-|---|---|---|
-| `name` | ✅ | Unique identifier shown in the dashboard |
-| `rpcUrl` | ✅ | Full HTTPS RPC endpoint URL |
-| `yellowstoneUrl` | ❌ | gRPC host:port for Yellowstone slot streaming |
-| `token` | ❌ | gRPC auth token (required if `yellowstoneUrl` is set) |
-| `cluster` | ❌ | `mainnet-beta` (default) or `devnet` |
-| `writeEnabled` | ❌ | Allow write transactions (default: `true`) |
-| `priorityBias` | ❌ | Score bonus — higher = preferred when scores are close |
-| `tags` | ❌ | Arbitrary labels, shown in dashboard |
-
-> ⚠️ **`routex.providers.json` is gitignored.** Never commit it — it contains your API keys.
-> Use `routex.providers.example.json` as the template.
+| Field | Description |
+|---|---|
+| `name` | Unique label shown in the dashboard |
+| `rpcUrl` | HTTPS RPC endpoint |
+| `yellowstoneUrl` | gRPC host:port for Yellowstone slot streaming (optional) |
+| `token` | gRPC auth token (required if `yellowstoneUrl` is set) |
+| `writeEnabled` | Allow write transactions through this provider (default: `true`) |
+| `priorityBias` | Score bonus — higher value = preferred when scores are close |
 
 ---
 
-## Environment Variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `ROUTEX_HOST` | `127.0.0.1` | Bind address |
-| `ROUTEX_PORT` | `8080` | HTTP port |
-| `ROUTEX_MONITOR_MODE` | `auto` | `rpc`, `yellowstone`, or `auto` |
-| `ROUTEX_MONITOR_INTERVAL_MS` | `2000` | RPC polling interval |
-| `ROUTEX_REQUEST_TIMEOUT_MS` | `4000` | Per-request timeout |
-| `ROUTEX_MAX_SLOT_LAG_FOR_WRITES` | `2` | Max slot lag allowed for write routes |
-| `ROUTEX_MAX_SLOT_LAG_FOR_FRESH_READS` | `1` | Max slot lag for `fresh-read` routes |
-| `ROUTEX_STALE_AFTER_MS` | `12000` | Mark provider stale if no update for this long |
-| `ROUTEX_PROVIDERS_JSON` | — | Inline JSON array of providers (alternative to file) |
-| `ROUTEX_PROVIDERS_FILE` | `routex.providers.json` | Path to providers config file |
-
----
-
-## API Endpoints
+## API
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/rpc` | JSON-RPC proxy endpoint |
+| `POST` | `/rpc` | JSON-RPC proxy |
 | `GET` | `/api/health` | Provider health snapshot |
-| `GET` | `/api/metrics` | Routing metrics and stats |
+| `GET` | `/api/metrics` | Routing metrics |
 | `GET` | `/api/events` | System event log |
 | `GET` | `/api/routes` | Recent routing decisions |
 | `GET` | `/` | Live dashboard |
