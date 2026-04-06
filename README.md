@@ -104,6 +104,18 @@ npm run dev
 
 Point your Solana SDK at `http://127.0.0.1:8080/rpc` instead of a direct RPC URL.
 
+For cross-origin frontend deployments such as Vercel, RouteX enables CORS by default. You can restrict browser access with:
+
+```bash
+ROUTEX_ALLOWED_ORIGINS=https://your-frontend-domain.com,https://www.your-frontend-domain.com
+```
+
+Use `*` to allow any origin:
+
+```bash
+ROUTEX_ALLOWED_ORIGINS=*
+```
+
 ### Try the built-in demo (no external RPC needed)
 
 ```bash

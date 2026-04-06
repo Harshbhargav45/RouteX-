@@ -18,6 +18,11 @@ import {
   MethodStrategy,
 } from "./types.js";
 
+type CorsConfig = {
+  allowAnyOrigin: boolean;
+  allowedOrigins: Set<string>;
+};
+
 function isJsonRpcRequest(body: unknown): body is JsonRpcRequest {
   if (!body || typeof body !== "object") {
     return false;
@@ -66,8 +71,53 @@ function getMaxSlotLagForStrategy(
   return null;
 }
 
+function loadCorsConfig(): CorsConfig {
+  const raw = process.env.ROUTEX_ALLOWED_ORIGINS?.trim() || "*";
+
+  if (raw === "*") {
+    return {
+      allowAnyOrigin: true,
+      allowedOrigins: new Set<string>(),
+    };
+  }
+
+  const allowedOrigins = new Set(
+    raw
+      .split(",")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0),
+  );
+
+  return {
+    allowAnyOrigin: false,
+    allowedOrigins,
+  };
+}
+
+function applyCorsHeaders(
+  request: Request,
+  response: Response,
+  corsConfig: CorsConfig,
+) {
+  const requestOrigin = request.headers.origin;
+
+  if (corsConfig.allowAnyOrigin) {
+    response.setHeader("Access-Control-Allow-Origin", "*");
+  } else if (requestOrigin && corsConfig.allowedOrigins.has(requestOrigin)) {
+    response.setHeader("Access-Control-Allow-Origin", requestOrigin);
+    response.setHeader("Vary", "Origin");
+  }
+
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  response.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With",
+  );
+}
+
 async function bootstrap() {
   const config = await loadConfig();
+  const corsConfig = loadCorsConfig();
   const providerStore = new ProviderStore(config.providers, {
     staleAfterMs: config.staleAfterMs,
     eventLogLimit: config.eventLogLimit,
@@ -76,6 +126,16 @@ async function bootstrap() {
   });
   const monitor = startMonitor(providerStore, config);
   const app = express();
+
+  app.use((request, response, next) => {
+    applyCorsHeaders(request, response, corsConfig);
+
+    if (request.method === "OPTIONS") {
+      return response.status(204).end();
+    }
+
+    next();
+  });
 
   app.use(express.json({ limit: "1mb" }));
 
