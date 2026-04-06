@@ -43,6 +43,7 @@ function normalizeProviderConfig(input: unknown): ProviderConfig {
   const {
     name,
     rpcUrl,
+    rpcHeaders,
     cluster,
     yellowstoneUrl,
     token,
@@ -59,9 +60,26 @@ function normalizeProviderConfig(input: unknown): ProviderConfig {
     throw new Error(`Provider ${name} is missing a valid rpcUrl`);
   }
 
+  const normalizedHeaders =
+    rpcHeaders && typeof rpcHeaders === "object" && !Array.isArray(rpcHeaders)
+      ? Object.fromEntries(
+          Object.entries(rpcHeaders).filter(
+            (entry): entry is [string, string] =>
+              typeof entry[0] === "string" &&
+              entry[0].trim() !== "" &&
+              typeof entry[1] === "string" &&
+              entry[1].trim() !== "",
+          ),
+        )
+      : undefined;
+
   return {
     name: name.trim(),
     rpcUrl: rpcUrl.trim(),
+    rpcHeaders:
+      normalizedHeaders && Object.keys(normalizedHeaders).length > 0
+        ? normalizedHeaders
+        : undefined,
     cluster:
       typeof cluster === "string" && cluster.trim() !== ""
         ? cluster

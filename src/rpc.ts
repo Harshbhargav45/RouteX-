@@ -115,7 +115,7 @@ export function isRetryableBatchUpstreamError(
 }
 
 export async function callJsonRpc(
-  provider: Pick<ProviderState, "rpcUrl" | "name">,
+  provider: Pick<ProviderState, "rpcUrl" | "name" | "rpcHeaders">,
   request: JsonRpcRequest | JsonRpcBatchRequest,
   timeoutMs: number,
 ): Promise<{
@@ -131,6 +131,7 @@ export async function callJsonRpc(
       method: "POST",
       headers: {
         "content-type": "application/json",
+        ...(provider.rpcHeaders ?? {}),
       },
       body: JSON.stringify(
         Array.isArray(request)
@@ -151,7 +152,21 @@ export async function callJsonRpc(
     });
 
     const durationMs = Date.now() - startedAt;
-    const payload = (await response.json()) as JsonRpcResponse | JsonRpcBatchResponse;
+    const responseText = await response.text();
+    let payload: JsonRpcResponse | JsonRpcBatchResponse;
+
+    try {
+      payload = JSON.parse(responseText) as JsonRpcResponse | JsonRpcBatchResponse;
+    } catch {
+      const trimmedBody = responseText.trim();
+      const preview =
+        trimmedBody.length === 0
+          ? "empty response body"
+          : trimmedBody.slice(0, 200);
+      throw new Error(
+        `Upstream ${provider.name} returned a non-JSON response${response.ok ? "" : ` (HTTP ${response.status})`}: ${preview}`,
+      );
+    }
 
     if (!response.ok) {
       throw new Error(

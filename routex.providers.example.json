@@ -24,7 +24,10 @@
   {
     "name": "rpcfast",
     "rpcUrl": "PASTE_RPCFAST_RPC_URL_HERE",
-    "yellowstoneUrl": "PASTE_YELLOWSTONE_GRPC_URL_HERE",
+    "rpcHeaders": {
+      "X-TOKEN": "PASTE_RPCFAST_HTTP_TOKEN_HERE_IF_NEEDED"
+    },
+    "yellowstoneUrl": "https://yellowstone-grpc.rpcfast.com:443",
     "token": "PASTE_YELLOWSTONE_TOKEN_HERE",
     "cluster": "mainnet-beta",
     "writeEnabled": true,

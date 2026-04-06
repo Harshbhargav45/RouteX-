@@ -25,6 +25,7 @@ function createInitialProviderState(provider: ProviderConfig): ProviderState {
   return {
     name: provider.name,
     rpcUrl: provider.rpcUrl,
+    rpcHeaders: provider.rpcHeaders,
     cluster: provider.cluster ?? "mainnet-beta",
     yellowstoneUrl: provider.yellowstoneUrl,
     lastKnownSlot: null,

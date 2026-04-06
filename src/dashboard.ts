@@ -293,6 +293,11 @@ export function renderDashboardHtml(): string {
       let histories = {}; // Stores last N points
       let lastTime = performance.now();
       let routeCounts = {};
+      const SAMPLE_ACCOUNT = "11111111111111111111111111111111";
+      const SAMPLE_ACCOUNTS = [
+        "11111111111111111111111111111111",
+        "Stake11111111111111111111111111111111111111"
+      ];
 
       function relativeTime(iso) {
         if (!iso) return "n/a";
@@ -518,17 +523,58 @@ export function renderDashboardHtml(): string {
         btn.disabled = false;
       }
 
+      function buildBurstRequests() {
+        return [
+          { jsonrpc: "2.0", id: "getSlot", method: "getSlot", params: [{ commitment: "processed" }] },
+          { jsonrpc: "2.0", id: "getLatestBlockhash", method: "getLatestBlockhash", params: [{ commitment: "processed" }] },
+          { jsonrpc: "2.0", id: "getBlockHeight", method: "getBlockHeight", params: [{ commitment: "processed" }] },
+          { jsonrpc: "2.0", id: "getBalance", method: "getBalance", params: [SAMPLE_ACCOUNT, { commitment: "processed" }] },
+          { jsonrpc: "2.0", id: "getMultipleAccounts", method: "getMultipleAccounts", params: [SAMPLE_ACCOUNTS, { commitment: "processed", encoding: "base64" }] }
+        ];
+      }
+
+      function summarizeRpcResult(method, body) {
+        if (body?.error) {
+          return method + ": " + body.error.message;
+        }
+
+        if (method === "getLatestBlockhash") {
+          const blockhash = body?.result?.value?.blockhash || body?.result?.blockhash;
+          return method + ": " + (blockhash ? blockhash.slice(0, 12) + "..." : "ok");
+        }
+
+        if (method === "getBalance") {
+          return method + ": " + (body?.result?.value ?? "ok");
+        }
+
+        if (method === "getMultipleAccounts") {
+          const count = Array.isArray(body?.result?.value) ? body.result.value.length : 0;
+          return method + ": " + count + " accounts";
+        }
+
+        return method + ": ok";
+      }
+
       async function runBurst() {
         const btn = document.getElementById("burst-btn");
         btn.disabled = true;
         document.getElementById("probe-root").innerHTML = "Sending burst...";
-        const methods = ["getSlot", "getLatestBlockhash", "getBalance", "getAccountInfo", "getProgramAccounts"];
-        for (const m of methods) {
+        const requests = buildBurstRequests();
+        const summaries = [];
+        for (const payload of requests) {
           try {
-            await fetch("/rpc", { method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({jsonrpc:"2.0", id:m, method:m, params:m==="getBalance"||m==="getAccountInfo" ? ["11111111111111111111111111111111"] : []})});
-          } catch {}
+            const res = await fetch("/rpc", {
+              method: "POST",
+              headers: {"content-type": "application/json"},
+              body: JSON.stringify(payload)
+            });
+            const body = await res.json();
+            summaries.push(summarizeRpcResult(payload.method, body));
+          } catch (error) {
+            summaries.push(payload.method + ": " + error);
+          }
         }
-        document.getElementById("probe-root").innerHTML = "Burst sent (5 requests)";
+        document.getElementById("probe-root").innerHTML = summaries.join("<br>");
         btn.disabled = false;
       }
 

@@ -21,6 +21,20 @@ type YellowstoneStream = {
   destroy?: () => void;
 };
 
+type YellowstoneChannelOptions = {
+  grpcHttp2KeepAliveInterval: number;
+  grpcKeepAliveTimeout: number;
+  grpcKeepAliveWhileIdle: boolean;
+  grpcTcpKeepalive: number;
+};
+
+const DEFAULT_YELLOWSTONE_CHANNEL_OPTIONS: YellowstoneChannelOptions = {
+  grpcHttp2KeepAliveInterval: 30_000,
+  grpcKeepAliveTimeout: 10_000,
+  grpcKeepAliveWhileIdle: true,
+  grpcTcpKeepalive: 1,
+};
+
 function isNodeVersionCompatibleForYellowstone(): boolean {
   const [major, minor] = process.versions.node
     .split(".")
@@ -61,6 +75,16 @@ function extractYellowstoneSlot(update: unknown): number | null {
     parseNumberish((value.blockMeta as Record<string, unknown> | undefined)?.slot) ??
     parseNumberish((value.block as Record<string, unknown> | undefined)?.slot)
   );
+}
+
+function normalizeYellowstoneEndpoint(endpoint: string): string {
+  const trimmed = endpoint.trim();
+
+  if (trimmed.includes("://")) {
+    return trimmed;
+  }
+
+  return `https://${trimmed}`;
 }
 
 async function probeProvider(
@@ -216,21 +240,21 @@ function startYellowstoneMonitor(
     "RouteX is using Yellowstone slot streaming for freshness monitoring",
   );
 
-  let rpcFallbackHandle: MonitorHandle | null = null;
   let rpcHybridHandle: MonitorHandle | null = null;
 
-  if (fallbackProviders.length > 0) {
-    providerStore.noteEvent(
-      "info",
-      "yellowstone-partial",
-      "Some providers do not expose Yellowstone and will be monitored through RPC polling",
-      null,
-      {
-        providers: fallbackProviders.map((provider) => provider.name),
-      },
-    );
-    rpcFallbackHandle = startRpcPollingMonitor(providerStore, config, fallbackProviders);
-  }
+  providerStore.noteEvent(
+    "info",
+    "yellowstone-rpc-hybrid",
+    fallbackProviders.length > 0
+      ? "Yellowstone mode is active with RPC polling enabled for all providers and fallback-only coverage for providers without Yellowstone"
+      : "Yellowstone mode is active with RPC polling enabled as a fallback and HTTP health verifier for all providers",
+    null,
+    {
+      yellowstoneProviders: eligibleProviders.map((provider) => provider.name),
+      rpcOnlyProviders: fallbackProviders.map((provider) => provider.name),
+    },
+  );
+  rpcHybridHandle = startRpcPollingMonitor(providerStore, config, config.providers);
 
   const subscribeToProvider = async (
     provider: ProviderConfig,
@@ -238,7 +262,11 @@ function startYellowstoneMonitor(
   ) => {
     try {
       const Client = sdk.default;
-      const client = new Client(provider.yellowstoneUrl ?? "", provider.token);
+      const client = new Client(
+        normalizeYellowstoneEndpoint(provider.yellowstoneUrl ?? ""),
+        provider.token,
+        DEFAULT_YELLOWSTONE_CHANNEL_OPTIONS,
+      );
 
       if (typeof client.connect === "function") {
         await client.connect();
@@ -281,6 +309,25 @@ function startYellowstoneMonitor(
       );
 
       stream.on("data", (update) => {
+        const pingId = (update as { ping?: { id?: number } } | null)?.ping?.id;
+
+        if (typeof pingId === "number") {
+          stream.write(
+            {
+              ping: { id: pingId },
+              accounts: {},
+              slots: {},
+              transactions: {},
+              transactionsStatus: {},
+              blocks: {},
+              blocksMeta: {},
+              entry: {},
+              accountsDataSlice: [],
+            },
+            () => undefined,
+          );
+        }
+
         const slot = extractYellowstoneSlot(update);
 
         if (slot === null) {
@@ -370,8 +417,6 @@ function startYellowstoneMonitor(
         "RouteX is using Yellowstone slot streaming for freshness monitoring",
       );
 
-      rpcHybridHandle = startRpcPollingMonitor(providerStore, config, fallbackProviders);
-
       for (const provider of eligibleProviders) {
         void subscribeToProvider(provider, sdk);
       }
@@ -398,7 +443,6 @@ function startYellowstoneMonitor(
       for (const cleanup of cleanupFns) {
         cleanup();
       }
-      rpcFallbackHandle?.stop();
       rpcHybridHandle?.stop();
     },
   };

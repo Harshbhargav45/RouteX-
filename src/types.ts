@@ -32,6 +32,7 @@ export type EventLevel = "info" | "warn" | "error";
 export type ProviderConfig = {
   name: string;
   rpcUrl: string;
+  rpcHeaders?: Record<string, string>;
   cluster?: string;
   yellowstoneUrl?: string;
   token?: string;
@@ -43,6 +44,7 @@ export type ProviderConfig = {
 export type ProviderState = {
   name: string;
   rpcUrl: string;
+  rpcHeaders?: Record<string, string>;
   cluster: string;
   yellowstoneUrl?: string;
   lastKnownSlot: number | null;
