@@ -103,6 +103,13 @@ export type RouteLogEntry = {
   createdAt: string;
 };
 
+export type LagHistoryPoint = {
+  createdAt: string;
+  slotLag: number | null;
+  score: number | null;
+  lastKnownSlot: number | null;
+};
+
 export type RouteRecord = {
   requestId: string;
   method: string;

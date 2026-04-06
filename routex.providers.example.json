@@ -1,25 +1,49 @@
 [
   {
-    "name": "provider-a",
-    "rpcUrl": "https://your-rpc-a.example.com",
-    "yellowstoneUrl": "https://your-yellowstone-a.example.com:443",
+    "name": "quicknode",
+    "rpcUrl": "PASTE_QUICKNODE_RPC_URL_HERE",
     "cluster": "mainnet-beta",
     "writeEnabled": true,
-    "priorityBias": 4,
+    "priorityBias": 1,
     "tags": [
       "primary",
-      "low-latency"
+      "quicknode"
     ]
   },
   {
-    "name": "provider-b",
-    "rpcUrl": "https://your-rpc-b.example.com",
-    "yellowstoneUrl": "https://your-yellowstone-b.example.com:443",
+    "name": "helius",
+    "rpcUrl": "PASTE_HELIUS_RPC_URL_HERE",
+    "cluster": "mainnet-beta",
+    "writeEnabled": true,
+    "priorityBias": 2,
+    "tags": [
+      "fast",
+      "helius"
+    ]
+  },
+  {
+    "name": "rpcfast",
+    "rpcUrl": "PASTE_RPCFAST_RPC_URL_HERE",
+    "yellowstoneUrl": "PASTE_YELLOWSTONE_GRPC_URL_HERE",
+    "token": "PASTE_YELLOWSTONE_TOKEN_HERE",
+    "cluster": "mainnet-beta",
+    "writeEnabled": true,
+    "priorityBias": 3,
+    "tags": [
+      "sponsor",
+      "rpcfast",
+      "yellowstone-ready"
+    ]
+  },
+  {
+    "name": "solana-public",
+    "rpcUrl": "https://api.mainnet-beta.solana.com",
     "cluster": "mainnet-beta",
     "writeEnabled": true,
     "priorityBias": 0,
     "tags": [
-      "backup"
+      "public",
+      "baseline"
     ]
   }
 ]

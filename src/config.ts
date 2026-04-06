@@ -20,9 +20,9 @@ function parseInteger(
   return parsed;
 }
 
-function parseMonitorMode(value: string | undefined): MonitorMode {
+function parseMonitorMode(value: string | undefined): MonitorMode | "auto" {
   if (!value || value.trim() === "") {
-    return "rpc";
+    return "auto";
   }
 
   const normalized = value.trim().toLowerCase();
@@ -144,7 +144,7 @@ export async function loadConfig(): Promise<RouteXConfig> {
     200,
     "ROUTEX_EVENT_LOG_LIMIT",
   );
-  const monitorMode = parseMonitorMode(process.env.ROUTEX_MONITOR_MODE);
+  const requestedMonitorMode = parseMonitorMode(process.env.ROUTEX_MONITOR_MODE);
 
   let providers: ProviderConfig[] = [];
 
@@ -165,6 +165,11 @@ export async function loadConfig(): Promise<RouteXConfig> {
       }
     }
   }
+
+  const monitorMode: MonitorMode =
+    requestedMonitorMode === "auto"
+      ? providers.some((provider) => provider.yellowstoneUrl) ? "yellowstone" : "rpc"
+      : requestedMonitorMode;
 
   return {
     host,

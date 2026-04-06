@@ -107,6 +107,10 @@ async function bootstrap() {
     return response.json(providerStore.listRouteLog());
   });
 
+  app.get("/api/history", (_request: Request, response: Response) => {
+    return response.json(providerStore.getLagHistory());
+  });
+
   app.get("/api/config", (_request: Request, response: Response) => {
     return response.json({
       host: config.host,

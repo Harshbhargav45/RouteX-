@@ -1,6 +1,7 @@
 import {
   EventEntry,
   EventLevel,
+  LagHistoryPoint,
   MonitorMode,
   MonitorSource,
   ProviderCandidateOptions,
@@ -73,9 +74,14 @@ export class ProviderStore {
   private activeMonitorMode: MonitorMode;
   private readonly events: EventEntry[] = [];
   private readonly routeLog: RouteLogEntry[] = [];
+  private readonly lagHistory = new Map<string, LagHistoryPoint[]>();
   private nextEventId = 1;
   private nextRouteId = 1;
   private providerSwitchCount = 0;
+  private lastActiveSwitchAt: string | null = null;
+  private lastActiveSwitchMs = 0;
+  private static readonly SWITCH_COOLDOWN_MS = 3_000;
+  private static readonly SWITCH_SCORE_THRESHOLD = 0.5;
 
   constructor(providerConfigs: ProviderConfig[], options: StoreOptions) {
     this.staleAfterMs = options.staleAfterMs;
@@ -86,6 +92,7 @@ export class ProviderStore {
 
     for (const provider of providerConfigs) {
       this.providers.set(provider.name, createInitialProviderState(provider));
+      this.lagHistory.set(provider.name, []);
     }
 
     this.pushEvent(
@@ -312,27 +319,55 @@ export class ProviderStore {
   }
 
   markActiveProvider(providerName: string | null) {
-    const previous = this.listProviders().find((provider) => provider.active)?.name ?? null;
+    const providers = this.listProviders();
+    const previous = providers.find((provider) => provider.active)?.name ?? null;
+
+    if (previous === providerName) {
+      return;
+    }
+
+    // Suppress rapid flicker: enforce a cooldown between switches
+    const now = Date.now();
+    const msSinceLastSwitch = now - this.lastActiveSwitchMs;
+    if (msSinceLastSwitch < ProviderStore.SWITCH_COOLDOWN_MS) {
+      return;
+    }
+
+    // Apply hysteresis: only switch away from a healthy provider if the
+    // new candidate is meaningfully better (score difference > threshold).
+    if (previous !== null && providerName !== null) {
+      const currentState = this.providers.get(previous);
+      const nextState = this.providers.get(providerName);
+      if (
+        currentState?.healthy &&
+        currentState.score !== null &&
+        nextState !== undefined &&
+        nextState.score !== null &&
+        currentState.score - nextState.score < ProviderStore.SWITCH_SCORE_THRESHOLD
+      ) {
+        return;
+      }
+    }
 
     for (const provider of this.providers.values()) {
       provider.active = provider.name === providerName;
     }
 
-    if (previous !== providerName) {
-      this.providerSwitchCount += 1;
-      this.pushEvent(
-        providerName ? "info" : "warn",
-        "active-provider-switch",
-        providerName
-          ? `Active provider switched from ${previous ?? "none"} to ${providerName}`
-          : `No active provider is currently eligible`,
-        providerName,
-        {
-          previous,
-          next: providerName,
-        },
-      );
-    }
+    this.providerSwitchCount += 1;
+    this.lastActiveSwitchAt = new Date().toISOString();
+    this.lastActiveSwitchMs = now;
+    this.pushEvent(
+      providerName ? "info" : "warn",
+      "active-provider-switch",
+      providerName
+        ? `Active provider switched from ${previous ?? "none"} to ${providerName}`
+        : `No active provider is currently eligible`,
+      providerName,
+      {
+        previous,
+        next: providerName,
+      },
+    );
   }
 
   noteEvent(
@@ -353,6 +388,16 @@ export class ProviderStore {
     return this.routeLog.slice(0, limit);
   }
 
+  getLagHistory(limit = 40) {
+    const result: Record<string, LagHistoryPoint[]> = {};
+
+    for (const [providerName, history] of this.lagHistory.entries()) {
+      result[providerName] = history.slice(-limit);
+    }
+
+    return result;
+  }
+
   getSnapshot() {
     const providers = this.listProviders();
     const bestProvider = providers.find((provider) => provider.active) ?? null;
@@ -365,11 +410,44 @@ export class ProviderStore {
       bestProvider,
       providers,
       monitorMode: this.activeMonitorMode,
+      lastActiveSwitchAt: this.lastActiveSwitchAt,
     };
   }
 
   getMetrics() {
     const providers = this.listProviders();
+    const routeCount = this.routeLog.length;
+    const successRouteCount = this.routeLog.filter(
+      (route) => route.status === "success",
+    ).length;
+    const failedRouteCount = routeCount - successRouteCount;
+    const averageDurationMs =
+      routeCount === 0
+        ? null
+        : Math.round(
+            this.routeLog.reduce((sum, route) => sum + route.durationMs, 0) /
+              routeCount,
+          );
+    const successRate =
+      routeCount === 0
+        ? null
+        : Number(((successRouteCount / routeCount) * 100).toFixed(1));
+    const routeProviderCounts = this.routeLog.reduce<Record<string, number>>(
+      (accumulator, route) => {
+        const providerName = route.providerName ?? "none";
+        accumulator[providerName] = (accumulator[providerName] ?? 0) + 1;
+        return accumulator;
+      },
+      {},
+    );
+    const methodCountByStrategy = this.routeLog.reduce<Record<string, number>>(
+      (accumulator, route) => {
+        const key = route.strategy ?? "unknown";
+        accumulator[key] = (accumulator[key] ?? 0) + 1;
+        return accumulator;
+      },
+      { read: 0, "fresh-read": 0, write: 0, unknown: 0 },
+    );
 
     return {
       providerCount: providers.length,
@@ -377,7 +455,13 @@ export class ProviderStore {
       totalErrorCount: providers.reduce((sum, provider) => sum + provider.errorCount, 0),
       totalTimeoutCount: providers.reduce((sum, provider) => sum + provider.timeoutCount, 0),
       providerSwitchCount: this.providerSwitchCount,
-      routeCount: this.routeLog.length,
+      routeCount,
+      successRouteCount,
+      failedRouteCount,
+      successRate,
+      averageDurationMs,
+      routeProviderCounts,
+      methodCountByStrategy,
       monitorMode: this.activeMonitorMode,
       providers,
     };
@@ -441,6 +525,38 @@ export class ProviderStore {
 
       provider.slotLag = Math.max(0, chainTip - provider.lastKnownSlot);
       provider.score = computeProviderScore(provider);
+      this.recordLagPoint(provider);
+    }
+  }
+
+  private recordLagPoint(provider: ProviderState) {
+    const history = this.lagHistory.get(provider.name);
+
+    if (!history) {
+      return;
+    }
+
+    const point: LagHistoryPoint = {
+      createdAt: new Date().toISOString(),
+      slotLag: provider.slotLag,
+      score: provider.score,
+      lastKnownSlot: provider.lastKnownSlot,
+    };
+    const previous = history[history.length - 1];
+
+    if (
+      previous &&
+      previous.slotLag === point.slotLag &&
+      previous.score === point.score &&
+      previous.lastKnownSlot === point.lastKnownSlot
+    ) {
+      return;
+    }
+
+    history.push(point);
+
+    if (history.length > 60) {
+      history.splice(0, history.length - 60);
     }
   }
 

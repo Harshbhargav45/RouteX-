@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { callJsonRpc } from "./rpc.js";
 import { ProviderStore } from "./store.js";
 import {
@@ -6,6 +7,8 @@ import {
   ProviderConfig,
   RouteXConfig,
 } from "./types.js";
+
+const require = createRequire(import.meta.url);
 
 type MonitorHandle = {
   stop: () => void;
@@ -27,7 +30,9 @@ function isNodeVersionCompatibleForYellowstone(): boolean {
     return false;
   }
 
-  return major > 20 || (major === 20 && minor >= 18);
+  // Yellow­stone gRPC works on modern LTS (>=18.18) and 20+. We relax the guard so demos
+  // on Node 18 don't get forced to RPC-only mode.
+  return major > 20 || (major === 20 && minor >= 0) || (major === 18 && minor >= 18) || major > 18;
 }
 
 function parseNumberish(value: unknown): number | null {
@@ -148,23 +153,18 @@ function startRpcPollingMonitor(
   };
 }
 
-async function importYellowstoneModule(): Promise<{
-  default: new (endpoint: string, token?: string) => {
-    connect?: () => Promise<void>;
+function importYellowstoneModule(): {
+  default: new (endpoint: string, xToken?: string, channelOptions?: Record<string, unknown>) => {
+    connect: () => Promise<void>;
     subscribe: () => Promise<YellowstoneStream>;
   };
   CommitmentLevel: {
     PROCESSED: number;
   };
-}> {
-  const importer = new Function(
-    "specifier",
-    "return import(specifier);",
-  ) as (specifier: string) => Promise<unknown>;
-
-  return (await importer("@triton-one/yellowstone-grpc")) as {
-    default: new (endpoint: string, token?: string) => {
-      connect?: () => Promise<void>;
+} {
+  return require("@triton-one/yellowstone-grpc") as {
+    default: new (endpoint: string, xToken?: string, channelOptions?: Record<string, unknown>) => {
+      connect: () => Promise<void>;
       subscribe: () => Promise<YellowstoneStream>;
     };
     CommitmentLevel: {
@@ -217,6 +217,7 @@ function startYellowstoneMonitor(
   );
 
   let rpcFallbackHandle: MonitorHandle | null = null;
+  let rpcHybridHandle: MonitorHandle | null = null;
 
   if (fallbackProviders.length > 0) {
     providerStore.noteEvent(
@@ -231,9 +232,11 @@ function startYellowstoneMonitor(
     rpcFallbackHandle = startRpcPollingMonitor(providerStore, config, fallbackProviders);
   }
 
-  const subscribeToProvider = async (provider: ProviderConfig) => {
+  const subscribeToProvider = async (
+    provider: ProviderConfig,
+    sdk: Awaited<ReturnType<typeof importYellowstoneModule>>,
+  ) => {
     try {
-      const sdk = await importYellowstoneModule();
       const Client = sdk.default;
       const client = new Client(provider.yellowstoneUrl ?? "", provider.token);
 
@@ -305,7 +308,7 @@ function startYellowstoneMonitor(
 
         if (!stopped) {
           setTimeout(() => {
-            void subscribeToProvider(provider);
+            void subscribeToProvider(provider, sdk);
           }, config.monitorIntervalMs);
         }
       });
@@ -320,7 +323,7 @@ function startYellowstoneMonitor(
 
         if (!stopped) {
           setTimeout(() => {
-            void subscribeToProvider(provider);
+            void subscribeToProvider(provider, sdk);
           }, config.monitorIntervalMs);
         }
       });
@@ -350,16 +353,43 @@ function startYellowstoneMonitor(
       );
       providerStore.updateProbeFailure(provider.name, message, false, "yellowstone");
 
-      if (!stopped) {
-        setTimeout(() => {
-          void subscribeToProvider(provider);
-        }, config.monitorIntervalMs);
-      }
+        if (!stopped) {
+          setTimeout(() => {
+            void subscribeToProvider(provider, sdk);
+          }, config.monitorIntervalMs);
+        }
     }
   };
 
-  for (const provider of eligibleProviders) {
-    void subscribeToProvider(provider);
+  // Load SDK synchronously via require (CJS build); on failure fall back to RPC.
+  try {
+    const sdk = importYellowstoneModule();
+    if (!stopped) {
+      providerStore.setActiveMonitorMode(
+        "yellowstone",
+        "RouteX is using Yellowstone slot streaming for freshness monitoring",
+      );
+
+      rpcHybridHandle = startRpcPollingMonitor(providerStore, config, fallbackProviders);
+
+      for (const provider of eligibleProviders) {
+        void subscribeToProvider(provider, sdk);
+      }
+    }
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : "Failed to load Yellowstone SDK";
+    providerStore.noteEvent(
+      "warn",
+      "yellowstone-import-failed",
+      `${message}; falling back to RPC polling`,
+      null,
+    );
+    providerStore.setActiveMonitorMode(
+      "rpc",
+      "RouteX fell back to RPC polling because Yellowstone import failed",
+    );
+    rpcHybridHandle = startRpcPollingMonitor(providerStore, config, config.providers);
   }
 
   return {
@@ -369,6 +399,7 @@ function startYellowstoneMonitor(
         cleanup();
       }
       rpcFallbackHandle?.stop();
+      rpcHybridHandle?.stop();
     },
   };
 }
